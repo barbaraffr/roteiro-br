@@ -192,7 +192,7 @@ export default function Home() {
             <h1 className="text-4xl sm:text-5xl lg:text-6xl font-extrabold tracking-tight leading-[1.05] mb-4">
               Calcule o custo da sua
               <span className="text-primary"> viagem de carro </span>
-              entre cidades brasileiras
+               entre cidades brasileiras
             </h1>
             <p className="text-lg text-muted-foreground leading-relaxed max-w-xl">
               Descubra a distância, tempo estimado, gasto com combustível e pedágios
