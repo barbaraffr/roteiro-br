@@ -61,6 +61,8 @@ export default function Home() {
           calculateMutation.mutate({
             originPlaceId: trip.originPlaceId,
             destinationPlaceId: trip.destinationPlaceId,
+            originName: trip.originName,
+            destinationName: trip.destinationName,
             fuelConsumption: trip.fuelConsumption,
             fuelPrice: trip.fuelPrice,
           });
@@ -107,6 +109,8 @@ export default function Home() {
     calculateMutation.mutate({
       originPlaceId: origin.placeId,
       destinationPlaceId: destination.placeId,
+      originName: origin.description,
+      destinationName: destination.description,
       fuelConsumption: consumption,
       fuelPrice: price,
     });

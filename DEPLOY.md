@@ -1,12 +1,13 @@
 # Deploy do RoteiroBR
 
-App full-stack: React (Vite) + Express + tRPC + MySQL.
+App full-stack: React (Vite) + Express + tRPC + MySQL.  
+Mapas e rotas: **OpenStreetMap** (Photon + OSRM + Leaflet).
 
 ## Local
 
 ```bash
 cp .env.example .env
-# edite o .env com MySQL e chaves Forge
+# edite o .env com MySQL (PHOTON_URL/OSRM_URL são opcionais)
 
 pnpm install
 pnpm db:push
@@ -48,17 +49,15 @@ No serviço do **app** (não no MySQL): **Variables** → adicione:
 |---|---|
 | `NODE_ENV` | `production` |
 | `JWT_SECRET` | gere com `openssl rand -base64 32` |
-| `DATABASE_URL` | URL do MySQL do Railway (pode usar referência `${{MySQL.MYSQL_URL}}` se disponível) |
-| `BUILT_IN_FORGE_API_URL` | `https://forge.butterfly-effect.dev` |
-| `BUILT_IN_FORGE_API_KEY` | sua chave Forge (backend) |
-| `VITE_FRONTEND_FORGE_API_URL` | `https://forge.butterfly-effect.dev` |
-| `VITE_FRONTEND_FORGE_API_KEY` | sua chave Forge (frontend) |
-| `OAUTH_SERVER_URL` | (opcional) URL do servidor OAuth Manus |
+| `DATABASE_URL` | URL do MySQL do Railway (ex.: `${{MySQL.MYSQL_URL}}`) |
+| `PHOTON_URL` | (opcional) `https://photon.komoot.io` |
+| `OSRM_URL` | (opcional) `https://router.project-osrm.org` |
+| `OAUTH_SERVER_URL` | (opcional) OAuth Manus |
 | `VITE_OAUTH_PORTAL_URL` | (opcional) portal de login |
-| `VITE_APP_ID` | (opcional) ID do app no OAuth |
+| `VITE_APP_ID` | (opcional) ID do app |
 | `OWNER_OPEN_ID` | (opcional) |
 
-Importante: variáveis `VITE_*` precisam existir **no build**. Depois de salvá-las, faça um **redeploy** para o frontend receber as chaves.
+Rotas e mapa **não** precisam mais de chaves Forge/Google.
 
 ### 5. Build e Start
 
@@ -71,14 +70,9 @@ O `PORT` o Railway injeta sozinho; não fixe `3000` em produção.
 
 ### 6. Domínio público
 
-Em **Settings** → **Networking** → **Generate Domain**.  
-Anote a URL (ex.: `https://roteiro-br-production.up.railway.app`).
+Em **Settings** → **Networking** → **Generate Domain**.
 
 ### 7. Migrar o banco
-
-Com o app já com `DATABASE_URL` correta, rode as migrations uma vez:
-
-**Opção A — Railway CLI**
 
 ```bash
 npm i -g @railway/cli
@@ -87,19 +81,13 @@ railway link
 railway run pnpm db:push
 ```
 
-**Opção B — one-off no painel**
-
-Use um comando one-off / shell do serviço, se disponível, com:
-
-```bash
-pnpm db:push
-```
+Ou rode `pnpm db:push` num shell/one-off do serviço.
 
 ### 8. Conferir
 
 1. Abra a URL pública.
 2. Digite duas cidades brasileiras e calcule a rota.
-3. Se o mapa ou o autocomplete falhar, revise as chaves Forge e se o último deploy foi **depois** de setar as `VITE_*`.
+3. O mapa Leaflet deve mostrar a linha da rota (tiles OSM).
 
 ---
 
@@ -108,18 +96,16 @@ pnpm db:push
 - [ ] Repo no GitHub
 - [ ] Serviço web + MySQL no Railway
 - [ ] `DATABASE_URL` e `JWT_SECRET` definidos
-- [ ] Chaves Forge (backend + frontend) definidas
 - [ ] Build: `pnpm install && pnpm build` / Start: `pnpm start`
 - [ ] Domínio gerado
 - [ ] `pnpm db:push` executado uma vez
-- [ ] Redeploy após alterar qualquer `VITE_*`
 
 ---
 
 ## Limitações atuais
 
-- Rotas e mapa dependem do **proxy Manus/Forge**, não de uma chave Google Maps direta.
-- Login/histórico dependem do **OAuth Manus**. Sem essas variáveis, o cálculo público ainda funciona; salvar no histórico não.
-- O banco é **MySQL**. Não use Postgres sem alterar o Drizzle.
-
-Para independência total no futuro: chave Google Cloud (Places + Directions + Maps JS) e OAuth próprio (ex.: Google).
+- Autocomplete usa **Photon** (demo público); rotas usam **OSRM** (demo público). Em tráfego alto, hospede suas próprias instâncias e aponte `PHOTON_URL` / `OSRM_URL`.
+- Pedágios continuam **estimados** (não há fonte OSM oficial de pedágios BR).
+- Login/histórico ainda dependem do **OAuth Manus** (opcional). Sem isso, o cálculo público funciona.
+- O banco é **MySQL**.
+- Histórico antigo com `placeId` do Google Maps não recalcula — faça novas buscas.

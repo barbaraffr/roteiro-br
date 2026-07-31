@@ -2,7 +2,12 @@ import { COOKIE_NAME } from "@shared/const";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
 import { publicProcedure, router, protectedProcedure } from "./_core/trpc";
-import { makeRequest, type DirectionsResult, type TravelMode } from "./_core/map";
+import {
+  decodePlaceId,
+  formatDuration,
+  getDrivingRoute,
+  searchCities,
+} from "./_core/osm";
 import { saveTrip, getTripsByUserId, deleteTripById } from "./db";
 import { z } from "zod";
 
@@ -21,90 +26,52 @@ export const appRouter = router({
 
   trips: router({
     /**
-     * Autocomplete for Brazilian cities using Google Places Autocomplete API.
+     * Autocomplete for Brazilian cities via Photon (OpenStreetMap).
      */
     autocomplete: publicProcedure
       .input(z.object({ query: z.string().min(1) }))
       .query(async ({ input }) => {
-        const result = await makeRequest<{
-          predictions: Array<{
-            description: string;
-            place_id: string;
-            structured_formatting: {
-              main_text: string;
-              secondary_text: string;
-            };
-          }>;
-          status: string;
-        }>("/maps/api/place/autocomplete/json", {
-          input: input.query,
-          components: "country:br",
-          language: "pt-BR",
-          types: "(cities)",
-        });
-
-        if (result.status !== "OK" && result.status !== "ZERO_RESULTS") {
-          throw new Error(`Places Autocomplete failed: ${result.status}`);
-        }
-
+        const predictions = await searchCities(input.query);
         return {
-          predictions: (result.predictions || []).map((p) => ({
-            placeId: p.place_id,
+          predictions: predictions.map((p) => ({
+            placeId: p.placeId,
             description: p.description,
-            mainText: p.structured_formatting?.main_text ?? p.description,
-            secondaryText: p.structured_formatting?.secondary_text ?? "",
+            mainText: p.mainText,
+            secondaryText: p.secondaryText,
           })),
         };
       }),
 
     /**
-     * Calculate route: distance, duration, fuel cost, and toll estimate.
+     * Calculate route: distance, duration, fuel cost, and toll estimate (OSRM).
      */
     calculate: publicProcedure
       .input(
         z.object({
           originPlaceId: z.string().min(1),
           destinationPlaceId: z.string().min(1),
+          originName: z.string().optional(),
+          destinationName: z.string().optional(),
           fuelConsumption: z.number().positive(), // km per liter
           fuelPrice: z.number().positive(), // R$ per liter
         })
       )
       .mutation(async ({ input }) => {
-        const directions = await makeRequest<DirectionsResult>(
-          "/maps/api/directions/json",
-          {
-            origin: `place_id:${input.originPlaceId}`,
-            destination: `place_id:${input.destinationPlaceId}`,
-            mode: "driving" as TravelMode,
-            language: "pt-BR",
-            region: "br",
-            alternatives: false,
-          }
-        );
+        const origin = decodePlaceId(input.originPlaceId);
+        const destination = decodePlaceId(input.destinationPlaceId);
 
-        if (directions.status !== "OK" || !directions.routes?.length) {
-          throw new Error(
-            directions.status === "ZERO_RESULTS"
-              ? "Não foi encontrada nenhuma rota entre as cidades informadas."
-              : `Google Directions falhou: ${directions.status}`
-          );
-        }
+        const route = await getDrivingRoute(origin, destination, {
+          originLabel: input.originName,
+          destinationLabel: input.destinationName,
+        });
 
-        const route = directions.routes[0];
-        const leg = route.legs[0];
+        const distanceKm = route.distanceMeters / 1000;
+        const durationSeconds = route.durationSeconds;
+        const durationText = formatDuration(durationSeconds);
 
-        const distanceKm = leg.distance.value / 1000;
-        const durationSeconds = leg.duration.value;
-        const durationText = leg.duration.text;
-
-        // Fuel cost = (distance in km) / (km per liter) * (price per liter)
         const fuelCost = (distanceKm / input.fuelConsumption) * input.fuelPrice;
 
-        // Toll cost estimate: Google Directions doesn't return toll data directly.
-        // We estimate based on Brazilian highway toll patterns.
-        // Average toll in Brazil: ~R$ 10.00 per toll plaza
-        // Average distance between toll plazas: ~50 km on major highways
-        // This is a rough estimate - actual tolls vary by route.
+        // Rough BR highway toll estimate (~R$10 / plaza every ~50 km).
         const estimatedTollPlazas = Math.floor(distanceKm / 50);
         const avgTollPrice = 10.0;
         const tollCost = distanceKm > 30 ? estimatedTollPlazas * avgTollPrice : 0;
@@ -112,8 +79,8 @@ export const appRouter = router({
         const totalCost = fuelCost + tollCost;
 
         return {
-          originAddress: leg.start_address,
-          destinationAddress: leg.end_address,
+          originAddress: route.originLabel,
+          destinationAddress: route.destinationLabel,
           distanceKm: Math.round(distanceKm * 100) / 100,
           durationText,
           durationSeconds,
@@ -123,8 +90,9 @@ export const appRouter = router({
           tollCost: Math.round(tollCost * 100) / 100,
           totalCost: Math.round(totalCost * 100) / 100,
           estimatedTollPlazas,
-          polyline: route.overview_polyline?.points ?? null,
-          summary: route.summary ?? "",
+          /** GeoJSON coordinates [lng,lat][] as JSON string */
+          polyline: route.geometryJson,
+          summary: "",
         };
       }),
 

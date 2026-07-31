@@ -124,8 +124,7 @@ describe("trips router", () => {
       const { ctx } = createUnauthContext();
       const caller = appRouter.createCaller(ctx);
 
-      // This will fail because it calls the Google Maps API, but it should
-      // not fail with UNAUTHORIZED — it should fail with a network/API error
+      // This may fail on network/API, but it should NOT fail with UNAUTHORIZED
       try {
         await caller.trips.autocomplete({ query: "São Paulo" });
       } catch (e: any) {
