@@ -1,4 +1,4 @@
-import { int, mysqlEnum, mysqlTable, text, timestamp, varchar } from "drizzle-orm/mysql-core";
+import { int, mysqlEnum, mysqlTable, text, timestamp, varchar, decimal } from "drizzle-orm/mysql-core";
 
 /**
  * Core user table backing auth flow.
@@ -25,4 +25,27 @@ export const users = mysqlTable("users", {
 export type User = typeof users.$inferSelect;
 export type InsertUser = typeof users.$inferInsert;
 
-// TODO: Add your tables here
+/**
+ * Trip history table — stores each route calculation a user saves.
+ */
+export const trips = mysqlTable("trips", {
+  id: int("id").autoincrement().primaryKey(),
+  userId: int("userId").notNull(),
+  originName: varchar("originName", { length: 255 }).notNull(),
+  originPlaceId: varchar("originPlaceId", { length: 255 }).notNull(),
+  destinationName: varchar("destinationName", { length: 255 }).notNull(),
+  destinationPlaceId: varchar("destinationPlaceId", { length: 255 }).notNull(),
+  distanceKm: decimal("distanceKm", { precision: 10, scale: 2 }).notNull(),
+  durationText: varchar("durationText", { length: 100 }).notNull(),
+  durationSeconds: int("durationSeconds").notNull(),
+  fuelConsumption: decimal("fuelConsumption", { precision: 6, scale: 2 }).notNull(),
+  fuelPrice: decimal("fuelPrice", { precision: 6, scale: 2 }).notNull(),
+  fuelCost: decimal("fuelCost", { precision: 10, scale: 2 }).notNull(),
+  tollCost: decimal("tollCost", { precision: 10, scale: 2 }).notNull().default("0"),
+  totalCost: decimal("totalCost", { precision: 10, scale: 2 }).notNull(),
+  polyline: text("polyline"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+
+export type Trip = typeof trips.$inferSelect;
+export type InsertTrip = typeof trips.$inferInsert;

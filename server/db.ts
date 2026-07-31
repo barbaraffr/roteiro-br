@@ -1,6 +1,6 @@
-import { eq } from "drizzle-orm";
+import { eq, desc, and } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
-import { InsertUser, users } from "../drizzle/schema";
+import { InsertUser, users, InsertTrip, trips } from "../drizzle/schema";
 import { ENV } from './_core/env';
 
 let _db: ReturnType<typeof drizzle> | null = null;
@@ -89,4 +89,39 @@ export async function getUserByOpenId(openId: string) {
   return result.length > 0 ? result[0] : undefined;
 }
 
-// TODO: add feature queries here as your schema grows.
+// ---------------------------------------------------------------------------
+// Trip history helpers
+// ---------------------------------------------------------------------------
+
+export async function saveTrip(trip: InsertTrip): Promise<void> {
+  const db = await getDb();
+  if (!db) {
+    console.warn("[Database] Cannot save trip: database not available");
+    return;
+  }
+  await db.insert(trips).values(trip);
+}
+
+export async function getTripsByUserId(userId: number) {
+  const db = await getDb();
+  if (!db) {
+    console.warn("[Database] Cannot get trips: database not available");
+    return [];
+  }
+  const result = await db
+    .select()
+    .from(trips)
+    .where(eq(trips.userId, userId))
+    .orderBy(desc(trips.createdAt));
+  return result;
+}
+
+export async function deleteTripById(userId: number, tripId: number): Promise<boolean> {
+  const db = await getDb();
+  if (!db) {
+    console.warn("[Database] Cannot delete trip: database not available");
+    return false;
+  }
+  const result = await db.delete(trips).where(and(eq(trips.id, tripId), eq(trips.userId, userId)));
+  return (result as any)?.affectedRows > 0;
+}
