@@ -5,6 +5,7 @@ import {
   distanceToPolylineMeters,
   haversineMeters,
   parseChargeForCar,
+  progressAlongPolylineMeters,
   samplePolyline,
 } from "./_core/tolls";
 
@@ -58,6 +59,34 @@ describe("geometry helpers", () => {
     // Opposite cabins of a plaza are ~180 degrees apart
     expect(angleDifference(48, 228)).toBeCloseTo(180, 5);
     expect(angleDifference(46.8, 48)).toBeCloseTo(1.2, 5);
+  });
+});
+
+describe("progressAlongPolylineMeters", () => {
+  it("orders points by travel progress from the origin", () => {
+    // Rough northbound route: Uberlândia → Uberaba → São Paulo (simplified)
+    const route = [
+      { lat: -18.91, lng: -48.28 }, // Uberlândia
+      { lat: -19.75, lng: -47.93 }, // Uberaba
+      { lat: -21.18, lng: -47.81 }, // Ribeirão area
+      { lat: -23.55, lng: -46.63 }, // São Paulo
+    ];
+
+    const nearOrigin = progressAlongPolylineMeters(
+      { lat: -18.95, lng: -48.26 },
+      route
+    );
+    const nearUberaba = progressAlongPolylineMeters(
+      { lat: -19.75, lng: -47.93 },
+      route
+    );
+    const nearSaoPaulo = progressAlongPolylineMeters(
+      { lat: -23.5, lng: -46.7 },
+      route
+    );
+
+    expect(nearOrigin).toBeLessThan(nearUberaba);
+    expect(nearUberaba).toBeLessThan(nearSaoPaulo);
   });
 });
 

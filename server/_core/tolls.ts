@@ -100,6 +100,7 @@ function cacheKey(points: Array<{ lat: number; lng: number }>): string {
   const first = points[0]!;
   const last = points[points.length - 1]!;
   return [
+    "v2-order", // bump when plaza list shape/order semantics change
     first.lat.toFixed(4),
     first.lng.toFixed(4),
     last.lat.toFixed(4),
@@ -238,10 +239,22 @@ export function angleDifference(a: number, b: number): number {
 export function nearestSegment(
   point: { lat: number; lng: number },
   polyline: Array<{ lat: number; lng: number }>
-): { distance: number; bearing: number | null } {
-  if (polyline.length === 0) return { distance: Infinity, bearing: null };
+): {
+  distance: number;
+  bearing: number | null;
+  segmentIndex: number;
+  t: number;
+} {
+  if (polyline.length === 0) {
+    return { distance: Infinity, bearing: null, segmentIndex: 0, t: 0 };
+  }
   if (polyline.length === 1) {
-    return { distance: haversineMeters(point, polyline[0]!), bearing: null };
+    return {
+      distance: haversineMeters(point, polyline[0]!),
+      bearing: null,
+      segmentIndex: 0,
+      t: 0,
+    };
   }
 
   const latScale = Math.cos(toRadians(point.lat));
@@ -252,6 +265,7 @@ export function nearestSegment(
 
   let best = Infinity;
   let bestIndex = 0;
+  let bestT = 0;
 
   for (let i = 0; i < polyline.length - 1; i++) {
     const a = toXY(polyline[i]!);
@@ -272,13 +286,50 @@ export function nearestSegment(
     if (distance < best) {
       best = distance;
       bestIndex = i;
+      bestT = t;
     }
   }
 
   return {
     distance: best,
     bearing: bearingDegrees(polyline[bestIndex]!, polyline[bestIndex + 1]!),
+    segmentIndex: bestIndex,
+    t: bestT,
   };
+}
+
+/** Cumulative meters from the start of the polyline to each vertex. */
+export function cumulativeDistancesMeters(
+  polyline: Array<{ lat: number; lng: number }>
+): number[] {
+  const distances = [0];
+  for (let i = 1; i < polyline.length; i++) {
+    distances.push(
+      distances[i - 1]! + haversineMeters(polyline[i - 1]!, polyline[i]!)
+    );
+  }
+  return distances;
+}
+
+/**
+ * Distance along the route from the origin to the point's nearest projection.
+ * Used to list toll plazas in travel order.
+ */
+export function progressAlongPolylineMeters(
+  point: { lat: number; lng: number },
+  polyline: Array<{ lat: number; lng: number }>,
+  cumulative?: number[]
+): number {
+  if (polyline.length === 0) return 0;
+  if (polyline.length === 1) return 0;
+
+  const { segmentIndex, t } = nearestSegment(point, polyline);
+  const prefix = cumulative ?? cumulativeDistancesMeters(polyline);
+  const segmentLength = haversineMeters(
+    polyline[segmentIndex]!,
+    polyline[segmentIndex + 1]!
+  );
+  return prefix[segmentIndex]! + t * segmentLength;
 }
 
 /**
@@ -399,9 +450,14 @@ function buildOverpassQuery(points: Array<{ lat: number; lng: number }>): string
 out body;`;
 }
 
+type TollBooth = TollPlaza & {
+  /** Meters from route origin to this booth's projection on the polyline. */
+  progressM: number;
+};
+
 /** Collapse booth cabins that belong to the same physical plaza. */
-function clusterBooths(booths: TollPlaza[]): TollPlaza[] {
-  const clusters: TollPlaza[] = [];
+function clusterBooths(booths: TollBooth[]): TollBooth[] {
+  const clusters: TollBooth[] = [];
 
   for (const booth of booths) {
     const existing = clusters.find((c) => {
@@ -415,7 +471,11 @@ function clusterBooths(booths: TollPlaza[]): TollPlaza[] {
         existing.price = booth.price;
         existing.priceFromOsm = true;
         existing.name = booth.name;
+        existing.lat = booth.lat;
+        existing.lng = booth.lng;
       }
+      // Keep the earliest position along the route for travel order.
+      existing.progressM = Math.min(existing.progressM, booth.progressM);
       continue;
     }
     clusters.push({ ...booth });
@@ -470,15 +530,19 @@ export async function findTollsAlongRoute(
   }
 
   const elements = data.elements ?? [];
+  const routeProgress = cumulativeDistancesMeters(fullRoute);
 
-  const booths: TollPlaza[] = [];
+  const booths: TollBooth[] = [];
   elements.forEach((element, index) => {
     const lat = element.lat ?? element.center?.lat;
     const lng = element.lon ?? element.center?.lon;
     if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
 
     const position = { lat: lat as number, lng: lng as number };
-    const { distance, bearing } = nearestSegment(position, fullRoute);
+    const { distance, bearing, segmentIndex, t } = nearestSegment(
+      position,
+      fullRoute
+    );
 
     // Drop booths that Overpass' wide corridor picked up from nearby roads.
     if (distance > MAX_ROUTE_DISTANCE_M) return;
@@ -496,16 +560,24 @@ export async function findTollsAlongRoute(
     }
 
     const parsed = parseChargeForCar(tags);
+    const segmentLength = haversineMeters(
+      fullRoute[segmentIndex]!,
+      fullRoute[segmentIndex + 1]!
+    );
 
     booths.push({
       name: boothName(tags, index),
       price: parsed ?? FALLBACK_TOLL_PRICE,
       priceFromOsm: parsed !== null,
       ...position,
+      progressM: routeProgress[segmentIndex]! + t * segmentLength,
     });
   });
 
-  const plazas = clusterBooths(booths);
+  // Travel order: first plaza after the origin appears first in the list.
+  const plazas = clusterBooths(booths)
+    .sort((a, b) => a.progressM - b.progressM)
+    .map(({ progressM: _progressM, ...plaza }) => plaza);
   const total = plazas.reduce((sum, plaza) => sum + plaza.price, 0);
 
   const summary: TollSummary = {
