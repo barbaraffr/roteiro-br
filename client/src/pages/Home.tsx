@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useRef } from "react";
 import { trpc } from "@/lib/trpc";
 import { CityAutocomplete, type CitySelection } from "@/components/CityAutocomplete";
 import { TripMap } from "@/components/TripMap";
@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
+import { shareSummaryImage } from "@/lib/shareSummaryImage";
 import { toast } from "sonner";
 import {
   MapPin,
@@ -47,49 +48,14 @@ function WhatsAppIcon({ className }: { className?: string }) {
   );
 }
 
-type ShareableResult = {
-  roundTrip: boolean;
-  originAddress: string;
-  destinationAddress: string;
-  distanceKm: number;
-  durationText: string;
-  fuelCost: number;
-  tollCost: number;
-  totalCost: number;
-  estimatedTollPlazas: number;
-};
-
-function buildWhatsAppShareText(result: ShareableResult): string {
-  const tripType = result.roundTrip ? "Ida e volta" : "Somente ida";
-  const lines = [
-    "*RoteiroBR — Resumo da viagem*",
-    "",
-    `📍 ${result.originAddress}`,
-    `➡️ ${result.destinationAddress}`,
-    `🔁 ${tripType}`,
-    "",
-    `🛣️ Distância: ${formatDistance(result.distanceKm)}`,
-    `⏱️ Tempo estimado: ${result.durationText}`,
-    `⛽ Combustível: ${formatCurrency(result.fuelCost)}`,
-    `💵 Pedágios: ${formatCurrency(result.tollCost)}${
-      result.estimatedTollPlazas > 0
-        ? ` (${result.estimatedTollPlazas} ${
-            result.estimatedTollPlazas === 1 ? "praça" : "praças"
-          })`
-        : ""
-    }`,
-    "",
-    `💰 *Custo total: ${formatCurrency(result.totalCost)}*`,
-  ];
-  return lines.join("\n");
-}
-
 export default function Home() {
   const [origin, setOrigin] = useState<CitySelection | null>(null);
   const [destination, setDestination] = useState<CitySelection | null>(null);
   const [fuelConsumption, setFuelConsumption] = useState("10");
   const [fuelPrice, setFuelPrice] = useState("5.89");
   const [roundTrip, setRoundTrip] = useState(false);
+  const [sharing, setSharing] = useState(false);
+  const summaryShareRef = useRef<HTMLDivElement>(null);
 
   const calculateMutation = trpc.trips.calculate.useMutation({
     onError: (err) => {
@@ -130,11 +96,31 @@ export default function Home() {
     });
   }, [origin, destination, fuelConsumption, fuelPrice, roundTrip, calculateMutation]);
 
-  const handleShareWhatsApp = useCallback(() => {
-    if (!result) return;
-    const text = buildWhatsAppShareText(result);
-    const url = `https://wa.me/?text=${encodeURIComponent(text)}`;
-    window.open(url, "_blank", "noopener,noreferrer");
+  const handleShareWhatsApp = useCallback(async () => {
+    if (!result || !summaryShareRef.current) return;
+
+    setSharing(true);
+    try {
+      const mode = await shareSummaryImage({
+        element: summaryShareRef.current,
+        filename: "roteirobr-resumo.png",
+        title: "RoteiroBR — Resumo da viagem",
+        text: `${result.originAddress} → ${result.destinationAddress}`,
+      });
+
+      if (mode === "downloaded") {
+        toast.success(
+          "Imagem baixada. Anexe o arquivo no WhatsApp para compartilhar."
+        );
+      }
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") {
+        return;
+      }
+      toast.error("Não foi possível gerar a imagem do resumo.");
+    } finally {
+      setSharing(false);
+    }
   }, [result]);
 
   const canCalculate = origin && destination && fuelConsumption && fuelPrice;
@@ -296,137 +282,179 @@ export default function Home() {
 
             {result && (
               <Card className="p-6 card-elegant border-border/60 animate-in fade-in slide-in-from-bottom-4 duration-300">
-                <div className="flex items-center gap-2 mb-4">
-                  <Wallet className="h-5 w-5 text-primary" />
-                  <h2 className="text-lg font-semibold">
-                    {result.roundTrip ? "Resumo — ida e volta" : "Resumo da viagem"}
-                  </h2>
-                </div>
-
-                <div className="space-y-3">
-                  <div className="flex items-center justify-between py-2.5 px-3.5 rounded-lg bg-muted/50">
-                    <div className="flex items-center gap-2.5">
-                      <RouteIcon className="h-4 w-4 text-muted-foreground" />
-                      <span className="text-sm text-muted-foreground">Distância</span>
+                <div
+                  ref={summaryShareRef}
+                  className="rounded-xl bg-card p-1"
+                >
+                  <div className="flex items-center gap-2.5 mb-4">
+                    <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-primary-foreground">
+                      <Navigation className="h-4 w-4" />
                     </div>
-                    <span className="text-sm font-semibold">
-                      {formatDistance(result.distanceKm)}
-                    </span>
+                    <div className="min-w-0">
+                      <p
+                        className="text-sm font-bold tracking-tight leading-none"
+                        style={{ fontFamily: "'Plus Jakarta Sans', sans-serif" }}
+                      >
+                        Roteiro<span className="text-primary">BR</span>
+                      </p>
+                      <p className="text-[10px] text-muted-foreground mt-0.5">
+                        {result.roundTrip
+                          ? "Resumo — ida e volta"
+                          : "Resumo da viagem"}
+                      </p>
+                    </div>
                   </div>
 
-                  <div className="flex items-center justify-between py-2.5 px-3.5 rounded-lg bg-muted/50">
-                    <div className="flex items-center gap-2.5">
-                      <Clock className="h-4 w-4 text-muted-foreground" />
-                      <span className="text-sm text-muted-foreground">Tempo estimado</span>
-                    </div>
-                    <span className="text-sm font-semibold">{result.durationText}</span>
+                  <div className="mb-4 rounded-lg border border-border/60 bg-muted/30 px-3.5 py-3">
+                    <p className="text-sm font-medium leading-snug">
+                      {result.originAddress}
+                    </p>
+                    <p className="text-xs text-muted-foreground my-1">↓</p>
+                    <p className="text-sm font-medium leading-snug">
+                      {result.destinationAddress}
+                    </p>
                   </div>
 
-                  <div className="flex items-center justify-between py-2.5 px-3.5 rounded-lg bg-muted/50">
-                    <div className="flex items-center gap-2.5">
-                      <Fuel className="h-4 w-4 text-muted-foreground" />
-                      <span className="text-sm text-muted-foreground">Combustível</span>
-                    </div>
-                    <span className="text-sm font-semibold">
-                      {formatCurrency(result.fuelCost)}
-                    </span>
-                  </div>
-
-                  <div className="py-2.5 px-3.5 rounded-lg bg-muted/50">
-                    <div className="flex items-center justify-between">
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between py-2.5 px-3.5 rounded-lg bg-muted/50">
                       <div className="flex items-center gap-2.5">
-                        <CircleDollarSign className="h-4 w-4 text-muted-foreground" />
+                        <RouteIcon className="h-4 w-4 text-muted-foreground" />
+                        <span className="text-sm text-muted-foreground">Distância</span>
+                      </div>
+                      <span className="text-sm font-semibold">
+                        {formatDistance(result.distanceKm)}
+                      </span>
+                    </div>
+
+                    <div className="flex items-center justify-between py-2.5 px-3.5 rounded-lg bg-muted/50">
+                      <div className="flex items-center gap-2.5">
+                        <Clock className="h-4 w-4 text-muted-foreground" />
                         <span className="text-sm text-muted-foreground">
-                          Pedágios{" "}
-                          {result.estimatedTollPlazas > 0 &&
-                            `(${result.estimatedTollPlazas} ${
-                              result.estimatedTollPlazas === 1 ? "praça" : "praças"
-                            })`}
+                          Tempo estimado
                         </span>
                       </div>
                       <span className="text-sm font-semibold">
-                        {formatCurrency(result.tollCost)}
+                        {result.durationText}
                       </span>
                     </div>
 
-                    {result.tollPlazas.length > 0 && (
-                      <ul className="mt-2 space-y-1 border-t border-border/50 pt-2">
-                        {result.tollPlazas.map((plaza, index) => (
-                          <li
-                            key={`${plaza.direction}-${plaza.name}-${index}`}
-                            className="flex items-center justify-between gap-2 text-xs text-muted-foreground"
-                          >
-                            <span className="truncate">
-                              {result.roundTrip && (
-                                <span className="text-primary/80 font-medium mr-1">
-                                  {plaza.direction === "ida" ? "Ida:" : "Volta:"}
-                                </span>
-                              )}
-                              {plaza.name}
-                            </span>
-                            <span className="shrink-0 tabular-nums">
-                              {formatCurrency(plaza.price)}
-                              {!plaza.priceFromOsm && " *"}
-                            </span>
-                          </li>
-                        ))}
-                      </ul>
+                    <div className="flex items-center justify-between py-2.5 px-3.5 rounded-lg bg-muted/50">
+                      <div className="flex items-center gap-2.5">
+                        <Fuel className="h-4 w-4 text-muted-foreground" />
+                        <span className="text-sm text-muted-foreground">
+                          Combustível
+                        </span>
+                      </div>
+                      <span className="text-sm font-semibold">
+                        {formatCurrency(result.fuelCost)}
+                      </span>
+                    </div>
+
+                    <div className="py-2.5 px-3.5 rounded-lg bg-muted/50">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2.5">
+                          <CircleDollarSign className="h-4 w-4 text-muted-foreground" />
+                          <span className="text-sm text-muted-foreground">
+                            Pedágios{" "}
+                            {result.estimatedTollPlazas > 0 &&
+                              `(${result.estimatedTollPlazas} ${
+                                result.estimatedTollPlazas === 1
+                                  ? "praça"
+                                  : "praças"
+                              })`}
+                          </span>
+                        </div>
+                        <span className="text-sm font-semibold">
+                          {formatCurrency(result.tollCost)}
+                        </span>
+                      </div>
+
+                      {result.tollPlazas.length > 0 && (
+                        <ul className="mt-2 space-y-1 border-t border-border/50 pt-2">
+                          {result.tollPlazas.map((plaza, index) => (
+                            <li
+                              key={`${plaza.direction}-${plaza.name}-${index}`}
+                              className="flex items-center justify-between gap-2 text-xs text-muted-foreground"
+                            >
+                              <span className="truncate">
+                                {result.roundTrip && (
+                                  <span className="text-primary/80 font-medium mr-1">
+                                    {plaza.direction === "ida" ? "Ida:" : "Volta:"}
+                                  </span>
+                                )}
+                                {plaza.name}
+                              </span>
+                              <span className="shrink-0 tabular-nums">
+                                {formatCurrency(plaza.price)}
+                                {!plaza.priceFromOsm && " *"}
+                              </span>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+
+                    {result.roundTrip && result.outbound && result.return && (
+                      <div className="grid grid-cols-2 gap-2 text-xs">
+                        <div className="rounded-lg border border-border/60 px-3 py-2">
+                          <p className="font-medium text-foreground mb-1">Ida</p>
+                          <p className="text-muted-foreground">
+                            {formatDistance(result.outbound.distanceKm)} ·{" "}
+                            {formatCurrency(result.outbound.totalCost)}
+                          </p>
+                        </div>
+                        <div className="rounded-lg border border-border/60 px-3 py-2">
+                          <p className="font-medium text-foreground mb-1">Volta</p>
+                          <p className="text-muted-foreground">
+                            {formatDistance(result.return.distanceKm)} ·{" "}
+                            {formatCurrency(result.return.totalCost)}
+                          </p>
+                        </div>
+                      </div>
                     )}
-                  </div>
 
-                  {result.roundTrip && result.outbound && result.return && (
-                    <div className="grid grid-cols-2 gap-2 text-xs">
-                      <div className="rounded-lg border border-border/60 px-3 py-2">
-                        <p className="font-medium text-foreground mb-1">Ida</p>
-                        <p className="text-muted-foreground">
-                          {formatDistance(result.outbound.distanceKm)} ·{" "}
-                          {formatCurrency(result.outbound.totalCost)}
-                        </p>
+                    <Separator className="my-1" />
+
+                    <div className="flex items-center justify-between py-3.5 px-3.5 rounded-lg bg-primary/8 border border-primary/15">
+                      <div className="flex items-center gap-2.5">
+                        <Wallet className="h-5 w-5 text-primary" />
+                        <span className="text-base font-semibold text-primary">
+                          Custo total
+                        </span>
                       </div>
-                      <div className="rounded-lg border border-border/60 px-3 py-2">
-                        <p className="font-medium text-foreground mb-1">Volta</p>
-                        <p className="text-muted-foreground">
-                          {formatDistance(result.return.distanceKm)} ·{" "}
-                          {formatCurrency(result.return.totalCost)}
-                        </p>
-                      </div>
-                    </div>
-                  )}
-
-                  <Separator className="my-1" />
-
-                  <div className="flex items-center justify-between py-3.5 px-3.5 rounded-lg bg-primary/8 border border-primary/15">
-                    <div className="flex items-center gap-2.5">
-                      <Wallet className="h-5 w-5 text-primary" />
-                      <span className="text-base font-semibold text-primary">
-                        Custo total
+                      <span className="text-xl font-bold text-primary">
+                        {formatCurrency(result.totalCost)}
                       </span>
                     </div>
-                    <span className="text-xl font-bold text-primary">
-                      {formatCurrency(result.totalCost)}
-                    </span>
                   </div>
+                </div>
 
+                <div data-share-exclude className="mt-3 space-y-3">
                   <Button
                     type="button"
                     variant="outline"
                     onClick={handleShareWhatsApp}
-                    className="w-full h-10 mt-1 border-[#25D366]/40 text-[#128C7E] hover:bg-[#25D366]/10 hover:text-[#075E54]"
+                    disabled={sharing}
+                    className="w-full h-10 border-[#25D366]/40 text-[#128C7E] hover:bg-[#25D366]/10 hover:text-[#075E54]"
                   >
-                    <WhatsAppIcon className="h-4 w-4 mr-2" />
-                    Compartilhar no WhatsApp
+                    {sharing ? (
+                      <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                    ) : (
+                      <WhatsAppIcon className="h-4 w-4 mr-2" />
+                    )}
+                    {sharing ? "Gerando imagem..." : "Compartilhar no WhatsApp"}
                   </Button>
-                </div>
 
-                <p className="text-xs text-muted-foreground/70 text-center mt-3 leading-relaxed">
-                  {result.tollLookupFailed
-                    ? "Não foi possível consultar as praças de pedágio agora. O valor mostrado desconsidera pedágios."
-                    : result.estimatedTollPlazas === 0
-                      ? "Nenhuma praça de pedágio encontrada nesta rota (dados do OpenStreetMap)."
-                      : result.tollPricesFromOsm
-                        ? "Tarifas de pedágio para carro, conforme o OpenStreetMap. Podem estar desatualizadas."
-                        : "Praças marcadas com * não têm tarifa no OpenStreetMap; usamos R$ 10,00 como estimativa."}
-                </p>
+                  <p className="text-xs text-muted-foreground/70 text-center leading-relaxed">
+                    {result.tollLookupFailed
+                      ? "Não foi possível consultar as praças de pedágio agora. O valor mostrado desconsidera pedágios."
+                      : result.estimatedTollPlazas === 0
+                        ? "Nenhuma praça de pedágio encontrada nesta rota (dados do OpenStreetMap)."
+                        : result.tollPricesFromOsm
+                          ? "Tarifas de pedágio para carro, conforme o OpenStreetMap. Podem estar desatualizadas."
+                          : "Praças marcadas com * não têm tarifa no OpenStreetMap; usamos R$ 10,00 como estimativa."}
+                  </p>
+                </div>
               </Card>
             )}
           </div>

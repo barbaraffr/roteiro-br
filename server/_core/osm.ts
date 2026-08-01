@@ -38,6 +38,7 @@ type PhotonFeature = {
     osm_type?: string;
     name?: string;
     city?: string;
+    district?: string;
     state?: string;
     country?: string;
     countrycode?: string;
