@@ -100,13 +100,10 @@ function buildDescription(props: PhotonFeature["properties"]): {
   return { mainText, secondaryText, description };
 }
 
-/**
- * Reverse-geocode coordinates via Photon into a city-like prediction.
- */
-export async function reverseGeocode(
+async function fetchPhotonReverse(
   lat: number,
   lng: number
-): Promise<CityPrediction | null> {
+): Promise<PhotonFeature["properties"] | null> {
   const url = new URL(`${getPhotonUrl()}/reverse`);
   url.searchParams.set("lat", String(lat));
   url.searchParams.set("lon", String(lng));
@@ -128,10 +125,19 @@ export async function reverseGeocode(
   }
 
   const data = (await response.json()) as PhotonResponse;
-  const feature = data.features?.[0];
-  if (!feature) return null;
+  return data.features?.[0]?.properties ?? null;
+}
 
-  const props = feature.properties ?? {};
+/**
+ * Reverse-geocode coordinates via Photon into a city-like prediction.
+ */
+export async function reverseGeocode(
+  lat: number,
+  lng: number
+): Promise<CityPrediction | null> {
+  const props = await fetchPhotonReverse(lat, lng);
+  if (!props) return null;
+
   const country = (props.countrycode || "").toUpperCase();
   if (country && country !== "BR") {
     throw new Error("LOCALIZACAO_FORA_DO_BRASIL");
@@ -157,6 +163,26 @@ export async function reverseGeocode(
     secondaryText,
     description,
   };
+}
+
+/** Nearest city/locality name for a coordinate (used to label coded toll plazas). */
+export async function resolveNearbyCityName(
+  lat: number,
+  lng: number
+): Promise<string | null> {
+  try {
+    const props = await fetchPhotonReverse(lat, lng);
+    if (!props) return null;
+
+    const country = (props.countrycode || "").toUpperCase();
+    if (country && country !== "BR") return null;
+
+    const city = props.city || props.district || props.name;
+    return city?.trim() || null;
+  } catch (error) {
+    console.warn("[OSM] nearby city lookup failed:", error);
+    return null;
+  }
 }
 
 /**

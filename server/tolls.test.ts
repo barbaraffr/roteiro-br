@@ -4,10 +4,26 @@ import {
   bearingDegrees,
   distanceToPolylineMeters,
   haversineMeters,
+  looksLikePlazaCode,
   parseChargeForCar,
   progressAlongPolylineMeters,
   samplePolyline,
 } from "./_core/tolls";
+
+describe("looksLikePlazaCode", () => {
+  it("detects concessionaire codes and generic plaza labels", () => {
+    expect(looksLikePlazaCode("P3")).toBe(true);
+    expect(looksLikePlazaCode("P12")).toBe(true);
+    expect(looksLikePlazaCode("KM 23")).toBe(true);
+    expect(looksLikePlazaCode("Praça 4")).toBe(true);
+  });
+
+  it("keeps real place names", () => {
+    expect(looksLikePlazaCode("Uberaba")).toBe(false);
+    expect(looksLikePlazaCode("Campo Limpo")).toBe(false);
+    expect(looksLikePlazaCode("Santa Rita do Passa Quatro")).toBe(false);
+  });
+});
 
 describe("parseChargeForCar", () => {
   it("reads the motorcar fare from a multi-vehicle charge tag", () => {

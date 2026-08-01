@@ -6,6 +6,8 @@
  * corridor around the route geometry and sum the car fare.
  */
 
+import { resolveNearbyCityName } from "./osm";
+
 const USER_AGENT =
   "RoteiroBR/1.0 (https://github.com/roteiro-br; travel cost calculator)";
 
@@ -100,7 +102,7 @@ function cacheKey(points: Array<{ lat: number; lng: number }>): string {
   const first = points[0]!;
   const last = points[points.length - 1]!;
   return [
-    "v2-order", // bump when plaza list shape/order semantics change
+    "v3-city-names", // bump when plaza list shape/order/name semantics change
     first.lat.toFixed(4),
     first.lng.toFixed(4),
     last.lat.toFixed(4),
@@ -484,17 +486,55 @@ function clusterBooths(booths: TollBooth[]): TollBooth[] {
   return clusters;
 }
 
+/** True when OSM labeled the booth with a concessionaire code instead of a place. */
+export function looksLikePlazaCode(name: string): boolean {
+  const n = name.trim();
+  if (!n) return true;
+  if (/^(P|KM)\s*\d+[A-Z]?$/i.test(n)) return true;
+  if (n.length <= 4 && /^[A-Z]{0,2}\d+[A-Z]?$/i.test(n)) return true;
+  if (/^Praça\s+\d+$/i.test(n)) return true;
+  return false;
+}
+
+function cityFromTags(tags: Record<string, string>): string | undefined {
+  const direct =
+    tags["addr:city"] || tags["city"] || tags["is_in:city"] || tags["addr:suburb"];
+  if (direct?.trim()) return direct.trim();
+
+  const isIn = tags["is_in"]?.trim();
+  if (!isIn) return undefined;
+  // Often "Cidade, Estado, Brasil"
+  return isIn.split(",")[0]?.trim() || undefined;
+}
+
 function boothName(tags: Record<string, string>, index: number): string {
   const raw = tags["name"] || tags["note"] || tags["operator"];
-  if (!raw) return `Praça ${index + 1}`;
+  const cleaned = raw
+    ? raw
+        // Cabin labels carry the direction ("Araguari 2 - Sul", "(sentido Norte)")
+        .replace(/\s*\((?:sentido|sent\.?)[^)]*\)/gi, "")
+        .split(" - ")[0]!
+        .replace(/^Pedágio\s+/i, "")
+        .trim()
+    : "";
 
-  return (
-    raw
-      // Cabin labels carry the direction ("Araguari 2 - Sul", "(sentido Norte)")
-      .replace(/\s*\((?:sentido|sent\.?)[^)]*\)/gi, "")
-      .split(" - ")[0]!
-      .replace(/^Pedágio\s+/i, "")
-      .trim() || `Praça ${index + 1}`
+  const name = cleaned || `Praça ${index + 1}`;
+  if (looksLikePlazaCode(name)) {
+    return cityFromTags(tags) || name;
+  }
+  return name;
+}
+
+/** Replace remaining code-like names with the nearest city via Photon. */
+async function enrichCodedPlazaNames(plazas: TollPlaza[]): Promise<TollPlaza[]> {
+  return Promise.all(
+    plazas.map(async (plaza) => {
+      if (!looksLikePlazaCode(plaza.name)) return plaza;
+
+      const city = await resolveNearbyCityName(plaza.lat, plaza.lng);
+      if (!city || city === plaza.name) return plaza;
+      return { ...plaza, name: city };
+    })
   );
 }
 
@@ -575,9 +615,10 @@ export async function findTollsAlongRoute(
   });
 
   // Travel order: first plaza after the origin appears first in the list.
-  const plazas = clusterBooths(booths)
+  const ordered = clusterBooths(booths)
     .sort((a, b) => a.progressM - b.progressM)
     .map(({ progressM: _progressM, ...plaza }) => plaza);
+  const plazas = await enrichCodedPlazaNames(ordered);
   const total = plazas.reduce((sum, plaza) => sum + plaza.price, 0);
 
   const summary: TollSummary = {
