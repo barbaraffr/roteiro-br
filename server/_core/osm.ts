@@ -100,6 +100,65 @@ function buildDescription(props: PhotonFeature["properties"]): {
 }
 
 /**
+ * Reverse-geocode coordinates via Photon into a city-like prediction.
+ */
+export async function reverseGeocode(
+  lat: number,
+  lng: number
+): Promise<CityPrediction | null> {
+  const url = new URL(`${getPhotonUrl()}/reverse`);
+  url.searchParams.set("lat", String(lat));
+  url.searchParams.set("lon", String(lng));
+  // The public Photon instance only supports default/de/en/fr — "pt" returns 400.
+  url.searchParams.set("lang", "default");
+
+  const response = await fetch(url.toString(), {
+    headers: {
+      Accept: "application/json",
+      "User-Agent": USER_AGENT,
+    },
+  });
+
+  if (!response.ok) {
+    const body = await response.text().catch(() => "");
+    throw new Error(
+      `Photon reverse failed (${response.status}): ${body || response.statusText}`
+    );
+  }
+
+  const data = (await response.json()) as PhotonResponse;
+  const feature = data.features?.[0];
+  if (!feature) return null;
+
+  const props = feature.properties ?? {};
+  const country = (props.countrycode || "").toUpperCase();
+  if (country && country !== "BR") {
+    throw new Error("LOCALIZACAO_FORA_DO_BRASIL");
+  }
+
+  // Prefer city-level labels for trip origin (reverse often returns street POIs).
+  const mainText = props.city || props.name || props.district || "Localização atual";
+  const parts = [
+    props.district && props.district !== mainText ? props.district : undefined,
+    props.state,
+    props.country,
+  ].filter(Boolean);
+  const secondaryText = parts.join(", ");
+  const description = secondaryText
+    ? `${mainText}, ${secondaryText}`
+    : mainText;
+
+  return {
+    placeId: encodePlaceId(lat, lng),
+    lat,
+    lng,
+    mainText,
+    secondaryText,
+    description,
+  };
+}
+
+/**
  * Search Brazilian places (cities/towns) via Photon.
  */
 export async function searchCities(query: string): Promise<CityPrediction[]> {

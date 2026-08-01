@@ -3,9 +3,11 @@ import {
   decodePlaceId,
   formatDuration,
   getDrivingRoute,
+  reverseGeocode,
   searchCities,
   type LatLng,
 } from "./_core/osm";
+import { TRPCError } from "@trpc/server";
 import { findTollsAlongRoute, type TollSummary } from "./_core/tolls";
 import { z } from "zod";
 
@@ -100,6 +102,49 @@ export const appRouter = router({
             secondaryText: p.secondaryText,
           })),
         };
+      }),
+
+    /**
+     * Resolve GPS coordinates to a Brazilian place (for "minha localização").
+     */
+    reverseGeocode: publicProcedure
+      .input(
+        z.object({
+          lat: z.number().min(-90).max(90),
+          lng: z.number().min(-180).max(180),
+        })
+      )
+      .query(async ({ input }) => {
+        try {
+          const place = await reverseGeocode(input.lat, input.lng);
+          if (!place) {
+            throw new TRPCError({
+              code: "NOT_FOUND",
+              message: "Não foi possível identificar a cidade nesta localização.",
+            });
+          }
+          return {
+            placeId: place.placeId,
+            description: place.description,
+            mainText: place.mainText,
+            secondaryText: place.secondaryText,
+          };
+        } catch (error) {
+          if (error instanceof TRPCError) throw error;
+          if (
+            error instanceof Error &&
+            error.message === "LOCALIZACAO_FORA_DO_BRASIL"
+          ) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: "A localização atual está fora do Brasil.",
+            });
+          }
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "Erro ao buscar a localização. Tente novamente.",
+          });
+        }
       }),
 
     /**

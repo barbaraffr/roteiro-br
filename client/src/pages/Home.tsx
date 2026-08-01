@@ -141,6 +141,7 @@ export default function Home() {
                   value={origin}
                   onChange={setOrigin}
                   icon={<MapPin className="h-4 w-4 text-primary" />}
+                  allowCurrentLocation
                 />
 
                 <div className="flex justify-center -my-1">

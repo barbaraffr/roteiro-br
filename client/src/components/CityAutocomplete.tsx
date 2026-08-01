@@ -2,8 +2,9 @@ import { useState, useEffect, useRef, useCallback, useId } from "react";
 import { trpc } from "@/lib/trpc";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverAnchor, PopoverContent } from "@/components/ui/popover";
-import { MapPin, Loader2, X } from "lucide-react";
+import { MapPin, Loader2, X, LocateFixed } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { toast } from "sonner";
 
 export interface CitySelection {
   placeId: string;
@@ -17,6 +18,21 @@ interface CityAutocompleteProps {
   value: CitySelection | null;
   onChange: (selection: CitySelection | null) => void;
   icon?: React.ReactNode;
+  /** Show "use current location" control (typically for origin). */
+  allowCurrentLocation?: boolean;
+}
+
+function geolocationErrorMessage(error: GeolocationPositionError): string {
+  switch (error.code) {
+    case error.PERMISSION_DENIED:
+      return "Permissão de localização negada. Ative nas configurações do navegador.";
+    case error.POSITION_UNAVAILABLE:
+      return "Não foi possível obter a localização atual.";
+    case error.TIMEOUT:
+      return "Tempo esgotado ao obter a localização. Tente novamente.";
+    default:
+      return "Erro ao obter a localização atual.";
+  }
 }
 
 export function CityAutocomplete({
@@ -25,14 +41,17 @@ export function CityAutocomplete({
   value,
   onChange,
   icon,
+  allowCurrentLocation = false,
 }: CityAutocompleteProps) {
   const [open, setOpen] = useState(false);
   const [inputValue, setInputValue] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
   const [activeIndex, setActiveIndex] = useState(0);
+  const [locating, setLocating] = useState(false);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const listboxId = useId();
+  const utils = trpc.useUtils();
 
   useEffect(() => {
     if (debounceRef.current) clearTimeout(debounceRef.current);
@@ -74,6 +93,48 @@ export function CityAutocomplete({
     setDebouncedQuery("");
   }, [onChange]);
 
+  const handleUseCurrentLocation = useCallback(async () => {
+    if (!navigator.geolocation) {
+      toast.error("Seu navegador não suporta geolocalização.");
+      return;
+    }
+
+    setLocating(true);
+    setOpen(false);
+
+    try {
+      const position = await new Promise<GeolocationPosition>((resolve, reject) => {
+        navigator.geolocation.getCurrentPosition(resolve, reject, {
+          enableHighAccuracy: true,
+          timeout: 15_000,
+          maximumAge: 60_000,
+        });
+      });
+
+      const { latitude: lat, longitude: lng } = position.coords;
+      const place = await utils.trips.reverseGeocode.fetch({ lat, lng });
+
+      onChange({
+        placeId: place.placeId,
+        description: place.description,
+        mainText: place.mainText,
+      });
+      setInputValue("");
+      setDebouncedQuery("");
+      toast.success("Localização atual definida como origem.");
+    } catch (error) {
+      if (error instanceof GeolocationPositionError) {
+        toast.error(geolocationErrorMessage(error));
+      } else if (error && typeof error === "object" && "message" in error) {
+        toast.error(String((error as { message: unknown }).message));
+      } else {
+        toast.error("Erro ao obter a localização atual.");
+      }
+    } finally {
+      setLocating(false);
+    }
+  }, [onChange, utils.trips.reverseGeocode]);
+
   const handleKeyDown = useCallback(
     (event: React.KeyboardEvent<HTMLInputElement>) => {
       if (event.key === "Escape") {
@@ -110,7 +171,24 @@ export function CityAutocomplete({
 
   return (
     <div className="flex flex-col gap-1.5">
-      <label className="text-sm font-medium text-foreground/80">{label}</label>
+      <div className="flex items-center justify-between gap-2">
+        <label className="text-sm font-medium text-foreground/80">{label}</label>
+        {allowCurrentLocation && (
+          <button
+            type="button"
+            onClick={handleUseCurrentLocation}
+            disabled={locating}
+            className="inline-flex items-center gap-1.5 text-xs font-medium text-primary hover:text-primary/80 disabled:opacity-60 transition-colors"
+          >
+            {locating ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <LocateFixed className="h-3.5 w-3.5" />
+            )}
+            {locating ? "Localizando..." : "Usar minha localização"}
+          </button>
+        )}
+      </div>
       <div className="relative">
         {value ? (
           <div className="flex items-center justify-between gap-2 rounded-lg border border-input bg-card px-3.5 py-2.5 card-elegant transition-all">
@@ -119,6 +197,7 @@ export function CityAutocomplete({
               <span className="text-sm font-medium truncate">{value.description}</span>
             </div>
             <button
+              type="button"
               onClick={handleClear}
               className="shrink-0 rounded-full p-0.5 text-muted-foreground hover:text-foreground transition-colors"
               aria-label="Limpar seleção"
@@ -149,9 +228,12 @@ export function CityAutocomplete({
                   onFocus={() => setOpen(true)}
                   onKeyDown={handleKeyDown}
                   placeholder={placeholder}
-                  className="pl-10 pr-4 py-2.5 card-elegant border-input bg-card transition-all focus-visible:ring-2 focus-visible:ring-ring/30"
+                  className={cn(
+                    "pl-10 py-2.5 card-elegant border-input bg-card transition-all focus-visible:ring-2 focus-visible:ring-ring/30",
+                    allowCurrentLocation || isLoading ? "pr-10" : "pr-4"
+                  )}
                 />
-                {isLoading && (
+                {(isLoading || locating) && (
                   <div className="absolute right-3.5 top-1/2 -translate-y-1/2">
                     <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
                   </div>
