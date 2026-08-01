@@ -1,29 +1,89 @@
-import { COOKIE_NAME } from "@shared/const";
-import { getSessionCookieOptions } from "./_core/cookies";
-import { systemRouter } from "./_core/systemRouter";
-import { publicProcedure, router, protectedProcedure } from "./_core/trpc";
+import { publicProcedure, router } from "./_core/trpc";
 import {
   decodePlaceId,
   formatDuration,
   getDrivingRoute,
   searchCities,
+  type LatLng,
 } from "./_core/osm";
-import { saveTrip, getTripsByUserId, deleteTripById } from "./db";
+import { findTollsAlongRoute, type TollSummary } from "./_core/tolls";
 import { z } from "zod";
 
-export const appRouter = router({
-  system: systemRouter,
-  auth: router({
-    me: publicProcedure.query(opts => opts.ctx.user),
-    logout: publicProcedure.mutation(({ ctx }) => {
-      const cookieOptions = getSessionCookieOptions(ctx.req);
-      ctx.res.clearCookie(COOKIE_NAME, { ...cookieOptions, maxAge: -1 });
-      return {
-        success: true,
-      } as const;
-    }),
-  }),
+type LegResult = {
+  originAddress: string;
+  destinationAddress: string;
+  distanceKm: number;
+  durationText: string;
+  durationSeconds: number;
+  fuelCost: number;
+  tollCost: number;
+  totalCost: number;
+  estimatedTollPlazas: number;
+  tollPlazas: Array<{
+    name: string;
+    price: number;
+    priceFromOsm: boolean;
+    direction: "ida" | "volta";
+  }>;
+  tollPricesFromOsm: boolean;
+  tollLookupFailed: boolean;
+  polyline: string;
+};
 
+async function calculateLeg(params: {
+  origin: LatLng;
+  destination: LatLng;
+  originLabel?: string;
+  destinationLabel?: string;
+  fuelConsumption: number;
+  fuelPrice: number;
+  direction: "ida" | "volta";
+}): Promise<LegResult> {
+  const route = await getDrivingRoute(params.origin, params.destination, {
+    originLabel: params.originLabel,
+    destinationLabel: params.destinationLabel,
+  });
+
+  const distanceKm = route.distanceMeters / 1000;
+  const durationSeconds = route.durationSeconds;
+  const fuelCost = (distanceKm / params.fuelConsumption) * params.fuelPrice;
+
+  let tolls: TollSummary = { plazas: [], total: 0, allPricesFromOsm: true };
+  let tollLookupFailed = false;
+  try {
+    tolls = await findTollsAlongRoute(
+      JSON.parse(route.geometryJson) as [number, number][]
+    );
+  } catch (error) {
+    tollLookupFailed = true;
+    console.warn("[Tolls] lookup failed:", error);
+  }
+
+  const tollCost = tolls.total;
+
+  return {
+    originAddress: route.originLabel,
+    destinationAddress: route.destinationLabel,
+    distanceKm: Math.round(distanceKm * 100) / 100,
+    durationText: formatDuration(durationSeconds),
+    durationSeconds,
+    fuelCost: Math.round(fuelCost * 100) / 100,
+    tollCost: Math.round(tollCost * 100) / 100,
+    totalCost: Math.round((fuelCost + tollCost) * 100) / 100,
+    estimatedTollPlazas: tolls.plazas.length,
+    tollPlazas: tolls.plazas.map((p) => ({
+      name: p.name,
+      price: p.price,
+      priceFromOsm: p.priceFromOsm,
+      direction: params.direction,
+    })),
+    tollPricesFromOsm: tolls.allPricesFromOsm,
+    tollLookupFailed,
+    polyline: route.geometryJson,
+  };
+}
+
+export const appRouter = router({
   trips: router({
     /**
      * Autocomplete for Brazilian cities via Photon (OpenStreetMap).
@@ -43,7 +103,7 @@ export const appRouter = router({
       }),
 
     /**
-     * Calculate route: distance, duration, fuel cost, and toll estimate (OSRM).
+     * Calculate route (one-way or round-trip): distance, duration, fuel, tolls.
      */
     calculate: publicProcedure
       .input(
@@ -52,126 +112,70 @@ export const appRouter = router({
           destinationPlaceId: z.string().min(1),
           originName: z.string().optional(),
           destinationName: z.string().optional(),
-          fuelConsumption: z.number().positive(), // km per liter
-          fuelPrice: z.number().positive(), // R$ per liter
+          fuelConsumption: z.number().positive(),
+          fuelPrice: z.number().positive(),
+          /** When true, also calculates the return leg and sums both. */
+          roundTrip: z.boolean().optional().default(false),
         })
       )
       .mutation(async ({ input }) => {
         const origin = decodePlaceId(input.originPlaceId);
         const destination = decodePlaceId(input.destinationPlaceId);
 
-        const route = await getDrivingRoute(origin, destination, {
+        const outbound = await calculateLeg({
+          origin,
+          destination,
           originLabel: input.originName,
           destinationLabel: input.destinationName,
+          fuelConsumption: input.fuelConsumption,
+          fuelPrice: input.fuelPrice,
+          direction: "ida",
         });
 
-        const distanceKm = route.distanceMeters / 1000;
-        const durationSeconds = route.durationSeconds;
-        const durationText = formatDuration(durationSeconds);
+        let returnLeg: LegResult | null = null;
+        if (input.roundTrip) {
+          returnLeg = await calculateLeg({
+            origin: destination,
+            destination: origin,
+            originLabel: input.destinationName,
+            destinationLabel: input.originName,
+            fuelConsumption: input.fuelConsumption,
+            fuelPrice: input.fuelPrice,
+            direction: "volta",
+          });
+        }
 
-        const fuelCost = (distanceKm / input.fuelConsumption) * input.fuelPrice;
-
-        // Rough BR highway toll estimate (~R$10 / plaza every ~50 km).
-        const estimatedTollPlazas = Math.floor(distanceKm / 50);
-        const avgTollPrice = 10.0;
-        const tollCost = distanceKm > 30 ? estimatedTollPlazas * avgTollPrice : 0;
-
-        const totalCost = fuelCost + tollCost;
+        const legs = returnLeg ? [outbound, returnLeg] : [outbound];
+        const distanceKm =
+          Math.round(legs.reduce((s, l) => s + l.distanceKm, 0) * 100) / 100;
+        const durationSeconds = legs.reduce((s, l) => s + l.durationSeconds, 0);
+        const fuelCost =
+          Math.round(legs.reduce((s, l) => s + l.fuelCost, 0) * 100) / 100;
+        const tollCost =
+          Math.round(legs.reduce((s, l) => s + l.tollCost, 0) * 100) / 100;
+        const tollPlazas = legs.flatMap((l) => l.tollPlazas);
 
         return {
-          originAddress: route.originLabel,
-          destinationAddress: route.destinationLabel,
-          distanceKm: Math.round(distanceKm * 100) / 100,
-          durationText,
+          roundTrip: Boolean(input.roundTrip),
+          originAddress: outbound.originAddress,
+          destinationAddress: outbound.destinationAddress,
+          distanceKm,
+          durationText: formatDuration(durationSeconds),
           durationSeconds,
           fuelConsumption: input.fuelConsumption,
           fuelPrice: input.fuelPrice,
-          fuelCost: Math.round(fuelCost * 100) / 100,
-          tollCost: Math.round(tollCost * 100) / 100,
-          totalCost: Math.round(totalCost * 100) / 100,
-          estimatedTollPlazas,
-          /** GeoJSON coordinates [lng,lat][] as JSON string */
-          polyline: route.geometryJson,
-          summary: "",
+          fuelCost,
+          tollCost,
+          totalCost: Math.round((fuelCost + tollCost) * 100) / 100,
+          estimatedTollPlazas: tollPlazas.length,
+          tollPlazas,
+          tollPricesFromOsm: legs.every((l) => l.tollPricesFromOsm),
+          tollLookupFailed: legs.some((l) => l.tollLookupFailed),
+          polyline: outbound.polyline,
+          returnPolyline: returnLeg?.polyline ?? null,
+          outbound,
+          return: returnLeg,
         };
-      }),
-
-    /**
-     * Save a trip to the user's history (requires authentication).
-     */
-    save: protectedProcedure
-      .input(
-        z.object({
-          originName: z.string(),
-          originPlaceId: z.string(),
-          destinationName: z.string(),
-          destinationPlaceId: z.string(),
-          distanceKm: z.number(),
-          durationText: z.string(),
-          durationSeconds: z.number(),
-          fuelConsumption: z.number(),
-          fuelPrice: z.number(),
-          fuelCost: z.number(),
-          tollCost: z.number(),
-          totalCost: z.number(),
-          polyline: z.string().nullable().optional(),
-        })
-      )
-      .mutation(async ({ input, ctx }) => {
-        await saveTrip({
-          userId: ctx.user.id,
-          originName: input.originName,
-          originPlaceId: input.originPlaceId,
-          destinationName: input.destinationName,
-          destinationPlaceId: input.destinationPlaceId,
-          distanceKm: input.distanceKm.toString(),
-          durationText: input.durationText,
-          durationSeconds: input.durationSeconds,
-          fuelConsumption: input.fuelConsumption.toString(),
-          fuelPrice: input.fuelPrice.toString(),
-          fuelCost: input.fuelCost.toString(),
-          tollCost: input.tollCost.toString(),
-          totalCost: input.totalCost.toString(),
-          polyline: input.polyline ?? null,
-        });
-        return { success: true };
-      }),
-
-    /**
-     * List all trips for the authenticated user.
-     */
-    list: protectedProcedure.query(async ({ ctx }) => {
-      const result = await getTripsByUserId(ctx.user.id);
-      return result.map((t) => ({
-        id: t.id,
-        originName: t.originName,
-        originPlaceId: t.originPlaceId,
-        destinationName: t.destinationName,
-        destinationPlaceId: t.destinationPlaceId,
-        distanceKm: parseFloat(t.distanceKm),
-        durationText: t.durationText,
-        durationSeconds: t.durationSeconds,
-        fuelConsumption: parseFloat(t.fuelConsumption),
-        fuelPrice: parseFloat(t.fuelPrice),
-        fuelCost: parseFloat(t.fuelCost),
-        tollCost: parseFloat(t.tollCost),
-        totalCost: parseFloat(t.totalCost),
-        polyline: t.polyline,
-        createdAt: t.createdAt,
-      }));
-    }),
-
-    /**
-     * Delete a trip from the user's history.
-     */
-    delete: protectedProcedure
-      .input(z.object({ tripId: z.number() }))
-      .mutation(async ({ input, ctx }) => {
-        const deleted = await deleteTripById(ctx.user.id, input.tripId);
-        if (!deleted) {
-          throw new Error("Viagem não encontrada ou não pertence ao usuário.");
-        }
-        return { success: true };
       }),
   }),
 });

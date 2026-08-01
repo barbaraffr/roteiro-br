@@ -1,111 +1,50 @@
 # Deploy do RoteiroBR
 
-App full-stack: React (Vite) + Express + tRPC + MySQL.  
-Mapas e rotas: **OpenStreetMap** (Photon + OSRM + Leaflet).
+App full-stack: React (Vite) + Express + tRPC.  
+Mapas, rotas e pedágios: **OpenStreetMap** (Photon + OSRM + Overpass + Leaflet).
+
+Sem banco de dados e sem login.
 
 ## Local
 
 ```bash
 cp .env.example .env
-# edite o .env com MySQL (PHOTON_URL/OSRM_URL são opcionais)
-
-pnpm install
-pnpm db:push
-pnpm dev
+npx pnpm install   # ou: pnpm install
+npx pnpm dev
 ```
 
 Abra [http://localhost:3000](http://localhost:3000).
 
----
+Sem `pnpm` instalado? Use `npx pnpm` ou instale com `npm i -g pnpm`.
 
 ## Railway (passo a passo)
 
-### 1. Subir o código no GitHub
-
-```bash
-git remote add origin https://github.com/SEU_USUARIO/roteiro-br.git
-git push -u origin main
-```
-
-(Se o remoto já existir, só faça o `push`.)
-
-### 2. Criar o projeto no Railway
-
-1. Acesse [railway.app](https://railway.app) e faça login (GitHub).
-2. **New Project** → **Deploy from GitHub repo** → selecione `roteiro-br`.
-3. O Railway detecta Node/pnpm pelo `package.json`.
-
-### 3. Adicionar MySQL
-
-1. No projeto: **+ New** → **Database** → **MySQL**.
-2. Abra o serviço MySQL → **Variables** (ou **Connect**).
-3. Copie a URL de conexão (algo como `mysql://root:...@...railway.app:3306/railway`).
-
-### 4. Variáveis do app
-
-No serviço do **app** (não no MySQL): **Variables** → adicione:
+1. Suba o código no GitHub.
+2. No [Railway](https://railway.app): **New Project** → **Deploy from GitHub repo**.
+3. Variáveis do serviço:
 
 | Variável | Valor |
 |---|---|
 | `NODE_ENV` | `production` |
-| `JWT_SECRET` | gere com `openssl rand -base64 32` |
-| `DATABASE_URL` | URL do MySQL do Railway (ex.: `${{MySQL.MYSQL_URL}}`) |
 | `PHOTON_URL` | (opcional) `https://photon.komoot.io` |
 | `OSRM_URL` | (opcional) `https://router.project-osrm.org` |
-| `OAUTH_SERVER_URL` | (opcional) OAuth Manus |
-| `VITE_OAUTH_PORTAL_URL` | (opcional) portal de login |
-| `VITE_APP_ID` | (opcional) ID do app |
-| `OWNER_OPEN_ID` | (opcional) |
+| `OVERPASS_URL` | (opcional) mirrors Overpass, separados por vírgula |
 
-Rotas e mapa **não** precisam mais de chaves Forge/Google.
+4. Build: `pnpm install && pnpm build`  
+   Start: `pnpm start`
+5. Em **Networking**, gere o domínio público.
 
-### 5. Build e Start
+O `PORT` o Railway injeta sozinho.
 
-Em **Settings** do serviço do app:
-
-- **Build Command:** `pnpm install && pnpm build`
-- **Start Command:** `pnpm start`
-
-O `PORT` o Railway injeta sozinho; não fixe `3000` em produção.
-
-### 6. Domínio público
-
-Em **Settings** → **Networking** → **Generate Domain**.
-
-### 7. Migrar o banco
-
-```bash
-npm i -g @railway/cli
-railway login
-railway link
-railway run pnpm db:push
-```
-
-Ou rode `pnpm db:push` num shell/one-off do serviço.
-
-### 8. Conferir
-
-1. Abra a URL pública.
-2. Digite duas cidades brasileiras e calcule a rota.
-3. O mapa Leaflet deve mostrar a linha da rota (tiles OSM).
-
----
-
-## Checklist rápido
+## Checklist
 
 - [ ] Repo no GitHub
-- [ ] Serviço web + MySQL no Railway
-- [ ] `DATABASE_URL` e `JWT_SECRET` definidos
-- [ ] Build: `pnpm install && pnpm build` / Start: `pnpm start`
+- [ ] Serviço web no Railway (sem MySQL)
+- [ ] Build / Start configurados
 - [ ] Domínio gerado
-- [ ] `pnpm db:push` executado uma vez
 
----
+## Limitações
 
-## Limitações atuais
-
-- Autocomplete usa **Photon** (demo público); rotas usam **OSRM** (demo público). Em tráfego alto, hospede suas próprias instâncias e aponte `PHOTON_URL` / `OSRM_URL`.
-- Pedágios continuam **estimados** (não há fonte OSM oficial de pedágios BR).
-- Login/histórico ainda dependem do **OAuth Manus** (opcional). Sem isso, o cálculo público funciona.
-- O banco é **MySQL**.
-- Histórico antigo com `placeId` do Google Maps não recalcula — faça novas buscas.
+- Photon, OSRM e Overpass usam demos públicos (limites de taxa). Em tráfego alto, hospede suas próprias instâncias.
+- Pedágios vêm das praças OSM (`barrier=toll_booth`). Sem tarifa no OSM, usa R$ 10,00 e marca com `*`.
+- Ida e volta calcula os dois sentidos (pedágios podem diferir).

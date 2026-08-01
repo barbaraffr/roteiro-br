@@ -1,8 +1,7 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useId } from "react";
 import { trpc } from "@/lib/trpc";
 import { Input } from "@/components/ui/input";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Command, CommandEmpty, CommandGroup, CommandItem, CommandList } from "@/components/ui/command";
+import { Popover, PopoverAnchor, PopoverContent } from "@/components/ui/popover";
 import { MapPin, Loader2, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -30,9 +29,11 @@ export function CityAutocomplete({
   const [open, setOpen] = useState(false);
   const [inputValue, setInputValue] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
+  const [activeIndex, setActiveIndex] = useState(0);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const listboxId = useId();
 
-  // Debounce the input
   useEffect(() => {
     if (debounceRef.current) clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(() => {
@@ -51,6 +52,12 @@ export function CityAutocomplete({
     }
   );
 
+  const predictions = data?.predictions ?? [];
+
+  useEffect(() => {
+    setActiveIndex(0);
+  }, [debouncedQuery]);
+
   const handleSelect = useCallback(
     (placeId: string, description: string, mainText: string) => {
       onChange({ placeId, description, mainText });
@@ -66,6 +73,40 @@ export function CityAutocomplete({
     setInputValue("");
     setDebouncedQuery("");
   }, [onChange]);
+
+  const handleKeyDown = useCallback(
+    (event: React.KeyboardEvent<HTMLInputElement>) => {
+      if (event.key === "Escape") {
+        setOpen(false);
+        return;
+      }
+
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault();
+        if (!open) {
+          setOpen(true);
+          return;
+        }
+        if (predictions.length === 0) return;
+        setActiveIndex((current) => {
+          const next = event.key === "ArrowDown" ? current + 1 : current - 1;
+          return (next + predictions.length) % predictions.length;
+        });
+        return;
+      }
+
+      if (event.key === "Enter") {
+        const active = predictions[activeIndex];
+        if (open && active) {
+          event.preventDefault();
+          handleSelect(active.placeId, active.description, active.mainText);
+        }
+      }
+    },
+    [open, predictions, activeIndex, handleSelect]
+  );
+
+  const showEmptyState = !isLoading && predictions.length === 0;
 
   return (
     <div className="flex flex-col gap-1.5">
@@ -87,18 +128,26 @@ export function CityAutocomplete({
           </div>
         ) : (
           <Popover open={open} onOpenChange={setOpen}>
-            <PopoverTrigger asChild>
+            {/* Anchor (not Trigger) so clicking the field never toggles the popover shut */}
+            <PopoverAnchor asChild>
               <div className="relative">
-                <div className="absolute left-3.5 top-1/2 -translate-y-1/2 text-muted-foreground">
+                <div className="absolute left-3.5 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none">
                   {icon ?? <MapPin className="h-4 w-4" />}
                 </div>
                 <Input
+                  ref={inputRef}
                   value={inputValue}
+                  role="combobox"
+                  aria-expanded={open}
+                  aria-controls={listboxId}
+                  aria-autocomplete="list"
+                  autoComplete="off"
                   onChange={(e) => {
                     setInputValue(e.target.value);
                     if (!open) setOpen(true);
                   }}
                   onFocus={() => setOpen(true)}
+                  onKeyDown={handleKeyDown}
                   placeholder={placeholder}
                   className="pl-10 pr-4 py-2.5 card-elegant border-input bg-card transition-all focus-visible:ring-2 focus-visible:ring-ring/30"
                 />
@@ -108,45 +157,58 @@ export function CityAutocomplete({
                   </div>
                 )}
               </div>
-            </PopoverTrigger>
+            </PopoverAnchor>
             <PopoverContent
               className="p-0 w-[var(--radix-popover-trigger-width)] min-w-[280px]"
               align="start"
               sideOffset={4}
+              // Keep the caret in the input while the suggestion list is open
+              onOpenAutoFocus={(e) => e.preventDefault()}
+              onCloseAutoFocus={(e) => e.preventDefault()}
             >
-              <Command shouldFilter={false}>
-                <CommandList>
-                  <CommandEmpty>
+              <div
+                id={listboxId}
+                role="listbox"
+                className="max-h-[300px] overflow-y-auto overflow-x-hidden p-1"
+              >
+                {showEmptyState ? (
+                  <p className="py-6 text-center text-sm text-muted-foreground">
                     {debouncedQuery.length < 2
                       ? "Digite pelo menos 2 caracteres..."
                       : "Nenhuma cidade encontrada."}
-                  </CommandEmpty>
-                  <CommandGroup>
-                    {data?.predictions.map((p) => (
-                      <CommandItem
-                        key={p.placeId}
-                        value={p.placeId}
-                        onSelect={() =>
-                          handleSelect(p.placeId, p.description, p.mainText)
-                        }
-                        className="gap-2.5"
-                      >
-                        <MapPin className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-                        <div className="flex flex-col min-w-0">
-                          <span className="text-sm font-medium truncate">
-                            {p.mainText}
+                  </p>
+                ) : (
+                  predictions.map((p, index) => (
+                    <div
+                      key={`${p.placeId}-${index}`}
+                      role="option"
+                      aria-selected={index === activeIndex}
+                      // Prevent the mousedown from stealing focus from the input
+                      onMouseDown={(e) => e.preventDefault()}
+                      onMouseEnter={() => setActiveIndex(index)}
+                      onClick={() =>
+                        handleSelect(p.placeId, p.description, p.mainText)
+                      }
+                      className={cn(
+                        "relative flex cursor-pointer items-center gap-2.5 rounded-sm px-2 py-1.5 text-sm select-none",
+                        index === activeIndex && "bg-accent text-accent-foreground"
+                      )}
+                    >
+                      <MapPin className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                      <div className="flex flex-col min-w-0">
+                        <span className="text-sm font-medium truncate">
+                          {p.mainText}
+                        </span>
+                        {p.secondaryText && (
+                          <span className="text-xs text-muted-foreground truncate">
+                            {p.secondaryText}
                           </span>
-                          {p.secondaryText && (
-                            <span className="text-xs text-muted-foreground truncate">
-                              {p.secondaryText}
-                            </span>
-                          )}
-                        </div>
-                      </CommandItem>
-                    ))}
-                  </CommandGroup>
-                </CommandList>
-              </Command>
+                        )}
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
             </PopoverContent>
           </Popover>
         )}

@@ -1,22 +1,29 @@
 import { useEffect, useRef } from "react";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
+import markerIcon2x from "leaflet/dist/images/marker-icon-2x.png";
+import markerIcon from "leaflet/dist/images/marker-icon.png";
+import markerShadow from "leaflet/dist/images/marker-shadow.png";
 import { cn } from "@/lib/utils";
 
-// Default marker assets (bundlers break Leaflet's relative icon paths)
-L.Icon.Default.mergeOptions({
-  iconRetinaUrl:
-    "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png",
-  iconUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png",
-  shadowUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png",
+const routeMarkerIcon = L.icon({
+  iconUrl: markerIcon,
+  iconRetinaUrl: markerIcon2x,
+  shadowUrl: markerShadow,
+  iconSize: [25, 41],
+  iconAnchor: [12, 41],
+  popupAnchor: [1, -34],
+  shadowSize: [41, 41],
 });
 
 interface MapViewProps {
   className?: string;
   initialCenter?: { lat: number; lng: number };
   initialZoom?: number;
-  /** GeoJSON coordinates [lng, lat][] as JSON string */
+  /** GeoJSON coordinates [lng, lat][] as JSON string (outbound) */
   routeGeometryJson?: string | null;
+  /** Optional return leg geometry */
+  returnGeometryJson?: string | null;
 }
 
 function parseRouteLatLngs(geometryJson: string): L.LatLngExpression[] {
@@ -30,6 +37,7 @@ export function MapView({
   initialCenter = { lat: -14.235, lng: -51.9253 },
   initialZoom = 4,
   routeGeometryJson,
+  returnGeometryJson,
 }: MapViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
@@ -60,7 +68,6 @@ export function MapView({
       mapRef.current = null;
       routeLayerRef.current = null;
     };
-    // Map instance is created once; center/zoom apply on first mount only.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -77,24 +84,47 @@ export function MapView({
     }
 
     try {
-      const latlngs = parseRouteLatLngs(routeGeometryJson);
-      if (latlngs.length === 0) return;
+      const outbound = parseRouteLatLngs(routeGeometryJson);
+      if (outbound.length === 0) return;
 
-      const polyline = L.polyline(latlngs, {
+      const outboundLine = L.polyline(outbound, {
         color: "#0d9488",
         weight: 5,
-        opacity: 0.85,
+        opacity: 0.9,
       }).addTo(layer);
 
-      L.marker(latlngs[0]!).addTo(layer);
-      L.marker(latlngs[latlngs.length - 1]!).addTo(layer);
+      L.marker(outbound[0]!, { icon: routeMarkerIcon }).addTo(layer);
+      L.marker(outbound[outbound.length - 1]!, { icon: routeMarkerIcon }).addTo(
+        layer
+      );
 
-      map.fitBounds(polyline.getBounds(), { padding: [48, 48] });
+      if (returnGeometryJson) {
+        const inbound = parseRouteLatLngs(returnGeometryJson);
+        if (inbound.length > 0) {
+          L.polyline(inbound, {
+            color: "#0369a1",
+            weight: 4,
+            opacity: 0.75,
+            dashArray: "8 6",
+          }).addTo(layer);
+        }
+      }
+
+      map.fitBounds(layer.getBounds(), { padding: [48, 48] });
       requestAnimationFrame(() => map.invalidateSize());
+
+      // Keep a reference so the linter doesn't treat outboundLine as unused.
+      void outboundLine;
     } catch (e) {
       console.error("Failed to render OSM route:", e);
     }
-  }, [routeGeometryJson, initialCenter.lat, initialCenter.lng, initialZoom]);
+  }, [
+    routeGeometryJson,
+    returnGeometryJson,
+    initialCenter.lat,
+    initialCenter.lng,
+    initialZoom,
+  ]);
 
   return (
     <div

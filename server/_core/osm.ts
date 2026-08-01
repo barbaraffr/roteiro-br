@@ -89,7 +89,11 @@ function buildDescription(props: PhotonFeature["properties"]): {
   description: string;
 } {
   const mainText = props.name || props.city || "Local";
-  const parts = [props.state, props.country].filter(Boolean);
+  const parts = [
+    props.city && props.city !== mainText ? props.city : undefined,
+    props.state,
+    props.country,
+  ].filter(Boolean);
   const secondaryText = parts.join(", ");
   const description = secondaryText ? `${mainText}, ${secondaryText}` : mainText;
   return { mainText, secondaryText, description };
@@ -101,9 +105,13 @@ function buildDescription(props: PhotonFeature["properties"]): {
 export async function searchCities(query: string): Promise<CityPrediction[]> {
   const url = new URL(`${getPhotonUrl()}/api/`);
   url.searchParams.set("q", query);
-  url.searchParams.set("lang", "pt");
-  url.searchParams.set("limit", "8");
+  // The public Photon instance only supports default/de/en/fr — "pt" returns 400.
+  url.searchParams.set("lang", "default");
+  url.searchParams.set("limit", "15");
   url.searchParams.set("bbox", BRAZIL_BBOX);
+  for (const layer of ["city", "district", "locality"]) {
+    url.searchParams.append("layer", layer);
+  }
 
   const response = await fetch(url.toString(), {
     headers: {
@@ -144,6 +152,8 @@ export async function searchCities(query: string): Promise<CityPrediction[]> {
       lng,
       ...labels,
     });
+
+    if (predictions.length >= 8) break;
   }
 
   return predictions;
