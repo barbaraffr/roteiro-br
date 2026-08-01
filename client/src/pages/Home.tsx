@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
-import { shareSummaryImage } from "@/lib/shareSummaryImage";
+import { isMobileClient, shareTripViaWhatsApp } from "@/lib/shareSummaryImage";
 import { toast } from "sonner";
 import {
   MapPin,
@@ -97,29 +97,23 @@ export default function Home() {
   }, [origin, destination, fuelConsumption, fuelPrice, roundTrip, calculateMutation]);
 
   const handleShareWhatsApp = useCallback(async () => {
-    if (!result || !summaryShareRef.current) return;
+    if (!result) return;
 
-    setSharing(true);
+    const needsImagePrep = isMobileClient();
+    if (needsImagePrep) setSharing(true);
+
     try {
-      const mode = await shareSummaryImage({
+      await shareTripViaWhatsApp({
+        result,
         element: summaryShareRef.current,
-        filename: "roteirobr-resumo.png",
-        title: "RoteiroBR — Resumo da viagem",
-        text: `${result.originAddress} → ${result.destinationAddress}`,
       });
-
-      if (mode === "downloaded") {
-        toast.success(
-          "Imagem baixada. Anexe o arquivo no WhatsApp para compartilhar."
-        );
-      }
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") {
         return;
       }
-      toast.error("Não foi possível gerar a imagem do resumo.");
+      toast.error("Não foi possível compartilhar o resumo.");
     } finally {
-      setSharing(false);
+      if (needsImagePrep) setSharing(false);
     }
   }, [result]);
 
@@ -442,7 +436,7 @@ export default function Home() {
                     ) : (
                       <WhatsAppIcon className="h-4 w-4 mr-2" />
                     )}
-                    {sharing ? "Gerando imagem..." : "Compartilhar no WhatsApp"}
+                    {sharing ? "Preparando imagem..." : "Compartilhar no WhatsApp"}
                   </Button>
 
                   <p className="text-xs text-muted-foreground/70 text-center leading-relaxed">
