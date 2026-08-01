@@ -47,6 +47,8 @@ export type TollSummary = {
   total: number;
   /** true when every plaza had a price in OSM */
   allPricesFromOsm: boolean;
+  /** true when Overpass was unreachable and this summary is a graceful empty fallback */
+  lookupFailed?: boolean;
 };
 
 type OverpassElement = {
@@ -63,13 +65,21 @@ type OverpassResponse = { elements?: OverpassElement[] };
 /**
  * Overpass mirrors can hang under load, so every attempt is bounded and the
  * whole lookup gives up rather than holding the user's request open.
+ *
+ * IMPORTANT: MIRROR_TIMEOUT_MS (client-side abort) must stay comfortably
+ * above the `[timeout:N]` we declare inside the Overpass QL query itself.
+ * If the client aborts before the server's own timeout fires, every request
+ * fails as a client-side TimeoutError even when Overpass would have answered
+ * (with data or a clean error) shortly after. Keep OVERPASS_QUERY_TIMEOUT_S
+ * a few seconds below MIRROR_TIMEOUT_MS.
  */
-const MIRROR_TIMEOUT_MS = 9_000;
-const TOTAL_TIMEOUT_MS = 28_000;
+const MIRROR_TIMEOUT_MS = 14_000;
+const OVERPASS_QUERY_TIMEOUT_S = 11;
+const TOTAL_TIMEOUT_MS = 32_000;
 const MIRROR_ATTEMPTS = 2;
 const RETRY_DELAY_MS = 1_500;
 
-/** Public Overpass mirrors, tried in order — they rate-limit aggressively. */
+/** Public Overpass mirrors, tried in parallel — they rate-limit aggressively. */
 const DEFAULT_OVERPASS_URLS = [
   "https://overpass-api.de/api/interpreter",
   "https://overpass.kumi.systems/api/interpreter",
@@ -100,12 +110,43 @@ function cacheKey(points: Array<{ lat: number; lng: number }>): string {
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+/** Single mirror request. Throws on non-OK response, timeout, or network error. */
+async function fetchFromMirror(
+  url: string,
+  query: string,
+  timeoutMs: number
+): Promise<OverpassResponse> {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+      "User-Agent": USER_AGENT,
+    },
+    body: new URLSearchParams({ data: query }).toString(),
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+
+  if (!response.ok) {
+    const body = await response.text().catch(() => "");
+    throw new Error(
+      `Overpass ${response.status}: ${body.slice(0, 120) || response.statusText}`
+    );
+  }
+
+  return (await response.json()) as OverpassResponse;
+}
+
+/**
+ * Races all configured mirrors against each other rather than trying them
+ * one after another. A sequential loop of N mirrors at T seconds each can
+ * cost up to N*T seconds for a single pass; racing them costs roughly the
+ * time of whichever mirror answers first.
+ */
 async function queryOverpass(query: string): Promise<OverpassResponse> {
   const urls = getOverpassUrls();
   const deadline = Date.now() + TOTAL_TIMEOUT_MS;
   let lastError: unknown;
 
-  // Mirrors answer 429/504 under load, so make a second pass after a pause.
   for (let attempt = 0; attempt < MIRROR_ATTEMPTS; attempt++) {
     if (attempt > 0) {
       const remaining = deadline - Date.now();
@@ -113,35 +154,23 @@ async function queryOverpass(query: string): Promise<OverpassResponse> {
       await sleep(RETRY_DELAY_MS);
     }
 
-    for (const url of urls) {
-      const remaining = deadline - Date.now();
-      if (remaining <= 0) break;
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) break;
 
-      try {
-        const response = await fetch(url, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/x-www-form-urlencoded",
-            "User-Agent": USER_AGENT,
-          },
-          body: new URLSearchParams({ data: query }).toString(),
-          signal: AbortSignal.timeout(Math.min(MIRROR_TIMEOUT_MS, remaining)),
-        });
+    const perMirrorTimeout = Math.min(MIRROR_TIMEOUT_MS, remaining);
 
-        if (!response.ok) {
-          const body = await response.text().catch(() => "");
-          throw new Error(
-            `Overpass ${response.status}: ${
-              body.slice(0, 120) || response.statusText
-            }`
-          );
-        }
-
-        return (await response.json()) as OverpassResponse;
-      } catch (error) {
+    const requests = urls.map((url) =>
+      fetchFromMirror(url, query, perMirrorTimeout).catch((error) => {
         lastError = error;
         console.warn(`[Tolls] mirror failed (${url}):`, error);
-      }
+        throw error;
+      })
+    );
+
+    try {
+      return await Promise.any(requests);
+    } catch {
+      // Every mirror failed this pass; loop will retry or exit below.
     }
   }
 
@@ -363,7 +392,7 @@ function buildOverpassQuery(points: Array<{ lat: number; lng: number }>): string
     .map((bbox) => `node["barrier"="toll_booth"](${bbox});`)
     .join("\n  ");
 
-  return `[out:json][timeout:20];
+  return `[out:json][timeout:${OVERPASS_QUERY_TIMEOUT_S}];
 (
   ${clauses}
 );
@@ -411,7 +440,9 @@ function boothName(tags: Record<string, string>, index: number): string {
 
 /**
  * Find toll plazas along a route. Returns an empty summary (total 0) when the
- * route has none. Throws if Overpass is unreachable.
+ * route has none, or when Overpass is unreachable — in the latter case
+ * `lookupFailed` is set so callers can surface a warning instead of failing
+ * the whole route calculation.
  */
 export async function findTollsAlongRoute(
   coordinates: [number, number][]
@@ -429,7 +460,15 @@ export async function findTollsAlongRoute(
   const cached = tollCache.get(key);
   if (cached) return cached;
 
-  const data = await queryOverpass(buildOverpassQuery(points));
+  let data: OverpassResponse;
+  try {
+    data = await queryOverpass(buildOverpassQuery(points));
+  } catch (error) {
+    console.error("[Tolls] lookup failed:", error);
+    // Don't cache failures — a later request may hit a healthy mirror.
+    return { plazas: [], total: 0, allPricesFromOsm: true, lookupFailed: true };
+  }
+
   const elements = data.elements ?? [];
 
   const booths: TollPlaza[] = [];
